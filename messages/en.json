@@ -1,0 +1,22 @@
+{
+  "Navbar": {
+    "home": "Home",
+    "cloudFundamentals": "Cloud Fundamentals",
+    "iam": "IAM",
+    "ec2": "EC2",
+    "s3": "S3",
+    "rds": "RDS",
+    "networking": "Networking",
+    "lambda": "Lambda",
+    "dynamodb": "DynamoDB",
+    "frontendS3": "Frontend S3",
+    "cicd": "CI/CD",
+    "loadBalancer": "Load Balancer",
+    "lambdaProxy": "Lambda as Proxy",
+    "securityGroups": "Security Groups",
+
+    "badge": "AWS · Course Material",
+    "title": "Introduction to AWS",
+    "subtitle": "Choose an area below to learn AWS services"
+  }
+}

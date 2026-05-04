@@ -1,9 +1,26 @@
-import Image from "next/image";
+import { getTranslations } from "next-intl/server";
+import Link from "next/link";
 
-export default function Home() {
+export default async function HomePage({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}) {
+  const t = await getTranslations("Navbar");
+
+  const { locale } = await params;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-     <h1>Welcome to AWS Fundamentals</h1>
-    </div>
+    <main className="p-10">
+      <h1 className="text-4xl font-bold mb-6">
+        AWS Academy
+      </h1>
+
+      <nav className="flex gap-4">
+        <Link href={`/${locale}/networking`}>
+          {t("networking")}
+        </Link>
+      </nav>
+    </main>
   );
 }

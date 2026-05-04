@@ -1,0 +1,673 @@
+# Amazon S3 in a Fullstack Application
+
+> **Course Level:** Beginner – Intermediate  
+> **Prerequisites:** Basic knowledge of Java/Spring Boot, JavaScript, and REST APIs  
+> **Estimated Time:** ~3–4 hours (theory + exercises)
+
+---
+
+## What is Amazon S3?
+
+**Amazon Simple Storage Service (S3)** is an object storage service from AWS that lets you store and retrieve any amount of data at any time, from anywhere on the web.
+
+Unlike a file system on a computer, S3 organizes data as **objects** inside **buckets**. Each object consists of:
+
+- **Data** – the actual file content (image, PDF, JSON, video, etc.)
+- **Key** – a unique name within the bucket (acts like a file path, e.g. `uploads/users/avatar-123.png`)
+- **Metadata** – optional information about the object (content-type, creation date, etc.)
+
+### Why S3?
+
+| Property | Description |
+|---|---|
+| Scalability | Store unlimited amounts of data |
+| Durability | 99.999999999% (11 nines) durability |
+| Cost | Pay only for what you use |
+| Integration | Seamless integration with other AWS services |
+| Security | Fine-grained access control via IAM and bucket policies |
+
+---
+
+## Core Concepts
+
+### Bucket
+
+A bucket is a container for objects. Every bucket has a **globally unique name** across all of AWS. You also choose which **region** (geographic location) to create the bucket in — pick one close to your users for lowest latency.
+
+```
+s3://my-application-uploads/
+```
+
+### Object Key
+
+The key is the object's "path" within the bucket. S3 is actually flat (no real folder structure), but using `/` in key names gives a folder-like experience in the AWS Console.
+
+```
+uploads/images/profile-pictures/user-42.jpg
+uploads/documents/2024/report.pdf
+```
+
+### Access Control
+
+S3 has several layers of access control:
+
+- **Block Public Access** – default setting that blocks all public access
+- **Bucket Policy** – JSON-based rules defining who can do what
+- **IAM Roles/Policies** – controls which AWS resources (EC2, Lambda, etc.) can use the bucket
+- **Pre-signed URLs** – temporary, signed URLs for time-limited access
+
+---
+
+## Architecture: Our Fullstack Application
+
+In this lesson we work with the following architecture:
+
+```
+┌─────────────────┐         ┌──────────────────────────┐
+│                 │  HTTP   │                          │
+│   Frontend      │────────▶│   HTTP API (API Gateway) │
+│   (React/Vue)   │         │                          │
+│                 │         └─────────┬──────┬─────────┘
+└─────────────────┘                   │      │
+                                      │      │
+                          ┌───────────▼─┐  ┌─▼────────────────┐
+                          │             │  │                   │
+                          │  Lambda     │  │  Spring Boot      │
+                          │  Functions  │  │  Backend (EC2)    │
+                          │             │  │                   │
+                          └──────┬──────┘  └────────┬─────────┘
+                                 │                  │
+                                 └─────────┬────────┘
+                                           │
+                                    ┌──────▼──────┐
+                                    │             │
+                                    │  Amazon S3  │
+                                    │   Bucket    │
+                                    │             │
+                                    └─────────────┘
+```
+
+### Responsibilities
+
+**Frontend (React/Vue)**
+- Allows the user to upload files
+- Fetches and displays files/images from S3
+- Communicates with the backend via the HTTP API
+
+**HTTP API (API Gateway)**
+- Receives HTTP calls from the frontend
+- Routes requests to the appropriate Lambda function
+
+**Lambda Functions**
+- Handles lightweight operations: generating pre-signed URLs, validation
+- Responds quickly without needing a persistent server
+
+**Spring Boot Backend (EC2)**
+- Handles complex business logic
+- Processes uploaded files (e.g. image resizing, document analysis)
+- Communicates directly with S3 via the AWS SDK
+
+**S3 Bucket**
+- Stores all files/objects
+- Accessible from both Lambda and EC2
+
+---
+
+## S3 and Lambda: Pre-signed URLs
+
+A common pattern is to let the **frontend upload directly to S3** without the file passing through your backend. This is called a **pre-signed URL upload**.
+
+### Flow
+
+```
+1. Frontend ───POST /upload-url { filename, contentType } ──▶ Lambda
+2. Lambda  ───generates pre-signed PUT URL ─────────────▶ S3
+3. Lambda  ◀──returns URL (valid 15 min) ────────────────
+4. Frontend ◀──{ uploadUrl: "https://s3.aws..." } ───────
+5. Frontend ───PUT file.jpg directly to S3 ─────────────▶ S3
+```
+
+### Lambda Function: Generate Pre-signed Upload URL (Node.js)
+
+```javascript
+// generate-upload-url/index.mjs
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { randomUUID } from "crypto";
+
+const s3 = new S3Client({ region: process.env.AWS_REGION });
+const BUCKET_NAME = process.env.S3_BUCKET_NAME;
+
+export const handler = async (event) => {
+  const { filename, contentType } = JSON.parse(event.body);
+
+  // Safe key – never use the user's filename directly!
+  const key = `uploads/${randomUUID()}-${filename}`;
+
+  const command = new PutObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: key,
+    ContentType: contentType,
+  });
+
+  // URL valid for 15 minutes
+  const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 900 });
+
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uploadUrl, key }),
+  };
+};
+```
+
+### Lambda Function: Generate Pre-signed Download URL (Node.js)
+
+```javascript
+// generate-download-url/index.mjs
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+const s3 = new S3Client({ region: process.env.AWS_REGION });
+
+export const handler = async (event) => {
+  const { key } = event.queryStringParameters;
+
+  const command = new GetObjectCommand({
+    Bucket: process.env.S3_BUCKET_NAME,
+    Key: key,
+  });
+
+  const downloadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ downloadUrl }),
+  };
+};
+```
+
+---
+
+## S3 and Spring Boot: AWS SDK for Java
+
+Your Spring Boot backend running on EC2 interacts with S3 via the **AWS SDK for Java v2**.
+
+### Dependencies (pom.xml)
+
+```xml
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>bom</artifactId>
+      <version>2.25.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>s3</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>s3-transfer-manager</artifactId>
+  </dependency>
+</dependencies>
+```
+
+### S3 Configuration (Spring Boot)
+
+```java
+// config/S3Config.java
+@Configuration
+public class S3Config {
+
+    @Value("${aws.region}")
+    private String region;
+
+    @Bean
+    public S3Client s3Client() {
+        return S3Client.builder()
+                .region(Region.of(region))
+                // On EC2 with an IAM Role, no explicit credentials are needed!
+                // The SDK automatically fetches credentials from the EC2 Instance Metadata
+                .credentialsProvider(DefaultCredentialsProvider.create())
+                .build();
+    }
+}
+```
+
+### S3 Service (Spring Boot)
+
+```java
+// service/S3Service.java
+@Service
+public class S3Service {
+
+    private final S3Client s3Client;
+
+    @Value("${aws.s3.bucket-name}")
+    private String bucketName;
+
+    public S3Service(S3Client s3Client) {
+        this.s3Client = s3Client;
+    }
+
+    /**
+     * Upload a file to S3
+     */
+    public String uploadFile(String key, byte[] data, String contentType) {
+        PutObjectRequest request = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(key)
+                .contentType(contentType)
+                .build();
+
+        s3Client.putObject(request, RequestBody.fromBytes(data));
+        return key;
+    }
+
+    /**
+     * Download a file from S3
+     */
+    public byte[] downloadFile(String key) {
+        GetObjectRequest request = GetObjectRequest.builder()
+                .bucket(bucketName)
+                .key(key)
+                .build();
+
+        ResponseBytes<GetObjectResponse> objectBytes = s3Client.getObjectAsBytes(request);
+        return objectBytes.asByteArray();
+    }
+
+    /**
+     * Delete an object from S3
+     */
+    public void deleteFile(String key) {
+        DeleteObjectRequest request = DeleteObjectRequest.builder()
+                .bucket(bucketName)
+                .key(key)
+                .build();
+
+        s3Client.deleteObject(request);
+    }
+
+    /**
+     * List all objects with a given prefix (e.g. all files for a specific user)
+     */
+    public List<String> listFiles(String prefix) {
+        ListObjectsV2Request request = ListObjectsV2Request.builder()
+                .bucket(bucketName)
+                .prefix(prefix)
+                .build();
+
+        ListObjectsV2Response response = s3Client.listObjectsV2(request);
+        return response.contents().stream()
+                .map(S3Object::key)
+                .collect(Collectors.toList());
+    }
+}
+```
+
+### REST Controller (Spring Boot)
+
+```java
+// controller/FileController.java
+@RestController
+@RequestMapping("/api/files")
+public class FileController {
+
+    private final S3Service s3Service;
+
+    public FileController(S3Service s3Service) {
+        this.s3Service = s3Service;
+    }
+
+    @PostMapping("/upload")
+    public ResponseEntity<Map<String, String>> uploadFile(
+            @RequestParam("file") MultipartFile file) throws IOException {
+
+        String key = "processed/" + UUID.randomUUID() + "-" + file.getOriginalFilename();
+        s3Service.uploadFile(key, file.getBytes(), file.getContentType());
+
+        return ResponseEntity.ok(Map.of("key", key, "status", "uploaded"));
+    }
+
+    @GetMapping("/download/{key}")
+    public ResponseEntity<byte[]> downloadFile(@PathVariable String key) {
+        byte[] data = s3Service.downloadFile(key);
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"file\"")
+                .body(data);
+    }
+
+    @DeleteMapping("/{key}")
+    public ResponseEntity<Void> deleteFile(@PathVariable String key) {
+        s3Service.deleteFile(key);
+        return ResponseEntity.noContent().build();
+    }
+}
+```
+
+### application.properties
+
+```properties
+aws.region=eu-north-1
+aws.s3.bucket-name=my-application-uploads
+```
+
+---
+
+## Frontend: Uploading with a Pre-signed URL
+
+```javascript
+// services/fileService.js (Vue/React – works in both)
+
+const API_BASE = "https://your-api-gateway-url.amazonaws.com";
+
+/**
+ * Step 1: Fetch a pre-signed URL from Lambda
+ * Step 2: Upload the file directly to S3
+ */
+export async function uploadFile(file) {
+  // 1. Ask Lambda for an upload URL
+  const urlResponse = await fetch(`${API_BASE}/upload-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      contentType: file.type,
+    }),
+  });
+
+  const { uploadUrl, key } = await urlResponse.json();
+
+  // 2. Upload directly to S3 using the pre-signed URL
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": file.type },
+    body: file, // Send the file directly – no base64 encoding needed
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error("Upload failed");
+  }
+
+  return key; // Save the key in your database for future retrieval
+}
+
+/**
+ * Fetch a download URL to display or download a file
+ */
+export async function getDownloadUrl(key) {
+  const response = await fetch(
+    `${API_BASE}/download-url?key=${encodeURIComponent(key)}`
+  );
+  const { downloadUrl } = await response.json();
+  return downloadUrl;
+}
+```
+
+### React Component: File Upload
+
+```jsx
+// components/FileUpload.jsx
+import { useState } from "react";
+import { uploadFile } from "../services/fileService";
+
+export default function FileUpload() {
+  const [status, setStatus] = useState("idle");
+  const [uploadedKey, setUploadedKey] = useState(null);
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setStatus("uploading");
+    try {
+      const key = await uploadFile(file);
+      setUploadedKey(key);
+      setStatus("success");
+    } catch (error) {
+      console.error(error);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div>
+      <input type="file" onChange={handleFileChange} disabled={status === "uploading"} />
+      {status === "uploading" && <p>Uploading...</p>}
+      {status === "success" && <p>✅ Uploaded! Key: {uploadedKey}</p>}
+      {status === "error" && <p>❌ Something went wrong. Please try again.</p>}
+    </div>
+  );
+}
+```
+
+---
+
+## IAM Roles and Security
+
+### EC2 Instance Role
+
+Your EC2 instance should have an **IAM Role** with the following policy to access S3:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-application-uploads",
+        "arn:aws:s3:::my-application-uploads/*"
+      ]
+    }
+  ]
+}
+```
+
+### Lambda Execution Role
+
+The Lambda function needs similar permissions. The AWS SDK automatically fetches credentials from the Lambda environment.
+
+### Bucket Policy: Block All Direct Public Access
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyPublicAccess",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::my-application-uploads/*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::YOUR-ACCOUNT-ID:role/ec2-spring-boot-role",
+            "arn:aws:iam::YOUR-ACCOUNT-ID:role/lambda-execution-role"
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+> ⚠️ **Important security rule:** Always enable **Block Public Access** at the bucket level unless you have a specific reason to make files public. Use pre-signed URLs to grant temporary access instead.
+
+---
+
+## CORS Configuration for S3
+
+For the frontend to be able to upload directly to S3, the bucket needs a **CORS configuration**:
+
+```json
+[
+  {
+    "AllowedHeaders": ["*"],
+    "AllowedMethods": ["GET", "PUT", "POST"],
+    "AllowedOrigins": ["https://your-frontend-domain.com"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+> During development you can temporarily set `"AllowedOrigins": ["*"]`, but replace this with your real domain before going to production.
+
+---
+
+## Exercises
+
+### Exercise 1 – Create and Configure an S3 Bucket (30 min)
+
+**Goal:** Get familiar with the AWS Console and basic S3 configuration.
+
+1. Log in to the AWS Console and navigate to S3.
+2. Create a new bucket with a unique name (e.g. `[your-name]-lab-uploads`).
+   - Choose region `eu-north-1` (Stockholm)
+   - Leave "Block all public access" enabled
+3. Manually upload a test file (e.g. an image) via the console.
+4. Try opening the file via its URL – what happens and why?
+5. Generate a pre-signed URL via the console (Actions → Share with a presigned URL) and test opening it.
+
+**Reflection questions:**
+- Why didn't the regular URL work?
+- How long is your pre-signed URL valid?
+
+---
+
+### Exercise 2 – Lambda Function for Pre-signed URLs (45 min)
+
+**Goal:** Create a Lambda function that generates pre-signed upload URLs.
+
+1. Create a new Lambda function with the Node.js 20.x runtime.
+2. Give the Lambda function an IAM execution role with `s3:PutObject` permission on your bucket.
+3. Implement the code from the "Lambda Function: Generate Pre-signed Upload URL" section above.
+4. Add the environment variable `S3_BUCKET_NAME` in the Lambda configuration.
+5. Test the function with the following test event:
+
+```json
+{
+  "body": "{\"filename\": \"test.jpg\", \"contentType\": \"image/jpeg\"}"
+}
+```
+
+6. Copy the `uploadUrl` from the response and test uploading a file with `curl`:
+
+```bash
+curl -X PUT \
+  -H "Content-Type: image/jpeg" \
+  --data-binary "@your-image.jpg" \
+  "YOUR_PRESIGNED_URL_HERE"
+```
+
+7. Verify in the S3 console that the file appeared in the bucket.
+
+**Bonus challenge:** Add validation so that only `image/jpeg` and `image/png` are accepted.
+
+---
+
+### Exercise 3 – Spring Boot Integration (60 min)
+
+**Goal:** Integrate S3 into a Spring Boot project.
+
+1. Create a new Spring Boot project with Spring Web and the AWS SDK dependency.
+2. Copy `S3Config.java` and `S3Service.java` from the lesson.
+3. Configure `application.properties` with your bucket information.
+4. Create a REST endpoint `/api/files/upload` that accepts a file and uploads it to S3.
+5. Create an endpoint `/api/files/{key}` that downloads and returns a file from S3.
+
+**Testing locally with an AWS CLI profile:**  
+Make sure you have a `~/.aws/credentials` file with your AWS account credentials, or run the application on an EC2 with the correct IAM Role.
+
+```bash
+# Test upload
+curl -X POST http://localhost:8080/api/files/upload \
+  -F "file=@your-image.jpg"
+
+# Test download (replace KEY with the value returned above)
+curl http://localhost:8080/api/files/download/KEY --output downloaded.jpg
+```
+
+**Bonus challenge:** Implement `listFiles(String prefix)` and expose it via `/api/files/list?prefix=uploads/`.
+
+---
+
+### Exercise 4 – Fullstack Integration (60 min)
+
+**Goal:** Connect the frontend, Lambda, and S3 together.
+
+1. Create a simple React or Vue project with Vite:
+
+```bash
+npm create vite@latest my-s3-app -- --template react
+cd my-s3-app && npm install
+```
+
+2. Copy `fileService.js` and `FileUpload.jsx` from the lesson and update the API URL.
+3. Create an HTTP API in API Gateway and add your Lambda function as an integration.
+4. Configure CORS on your S3 bucket (allow `http://localhost:5173` during development).
+5. Run the frontend app and test uploading a file from the browser.
+6. Verify that the file appears in the S3 console with the correct key.
+
+**Bonus challenge:**  
+Add an image gallery to the frontend that lists uploaded images using download URLs from your Lambda.
+
+---
+
+### Exercise 5 – Security and Cost Optimization (30 min)
+
+**Goal:** Reflect on security and operational considerations.
+
+Discuss and implement (if time allows) the following:
+
+1. **Filename sanitization:** Why is `UUID + originalFilename` better than just `originalFilename` as an S3 key?
+
+2. **File size limits:** How can you restrict the size of uploaded files?
+   - In Lambda (pre-signed URL): Add `ContentLengthRange` to the pre-signed URL command.
+   - In Spring Boot: Use `spring.servlet.multipart.max-file-size=10MB`.
+
+3. **Lifecycle rules:** Go to your S3 bucket → Management → Lifecycle rules. Create a rule that automatically deletes objects in the `temp/` folder after 7 days. Why is this useful?
+
+4. **Cost estimate:** Estimate the monthly cost of storing 100 GB in S3 and serving 1 TB of data per month. Use the [AWS Pricing Calculator](https://calculator.aws).
+
+---
+
+## Summary
+
+In this lesson we covered:
+
+- What S3 is and how objects, buckets, and keys work
+- How S3 fits into a fullstack architecture with EC2, Lambda, and API Gateway
+- How Lambda generates pre-signed URLs for secure direct uploads from the frontend
+- How Spring Boot integrates with S3 via the AWS SDK for Java
+- Security considerations: IAM roles, bucket policies, and CORS
+
+### Next Steps
+
+- Explore **S3 Event Notifications** – automatically trigger Lambda when a file is uploaded
+- Learn about **S3 Versioning** to keep a history of file changes
+- Look into **CloudFront** to cache and speed up delivery of S3 files globally
+- Explore **S3 Intelligent-Tiering** for automatic cost optimization
+
+---
+
+*Material developed for an introductory course in AWS and fullstack development.*

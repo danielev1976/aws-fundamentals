@@ -1,0 +1,22 @@
+{
+  "Navbar": {
+    "home": "Hem",
+    "cloudFundamentals": "Molngrunder",
+    "iam": "IAM",
+    "ec2": "EC2",
+    "s3": "S3",
+    "rds": "RDS",
+    "networking": "Networking",
+    "lambda": "Lambda",
+    "dynamodb": "DynamoDB",
+    "frontendS3": "Frontend S3",
+    "cicd": "CI/CD",
+    "loadBalancer": "Load Balancer",
+    "lambdaProxy": "Lambda som proxy",
+    "securityGroups": "Security Groups",
+
+    "badge": "AWS · Lektionsmaterial",
+    "title": "Introduktion till AWS",
+    "subtitle": "Välj ett område nedan för att läsa om AWS-tjänster"
+  }
+}
